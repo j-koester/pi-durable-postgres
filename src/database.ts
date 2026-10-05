@@ -5,11 +5,12 @@
  * (`/storage/sqlite`): promise-based `exec`, `run`, `get`, `all`, `transaction`,
  * `close`. A transaction callback receives a transaction executor; all work in
  * the transaction must use it, and the handle expires when the callback settles.
- * Adapters must queue unrelated operations until the transaction finishes.
+ * Adapters must queue unrelated operations until the transaction finishes. Do not
+ * call the outer facade from inside a transaction callback: that would deadlock.
  *
  * Implementations MUST return PostgreSQL `bigint` (int8) columns as JavaScript
- * numbers, not strings (see `openNodePostgresStorage`, which installs the
- * parser). All IDs and sequence numbers in the durable storage are safe
+ * numbers, not strings, without changing other database clients' parsers.
+ * All IDs and sequence numbers in the durable storage are safe
  * integers and use BIGINT columns.
  *
  * Placeholders are positional: `$1`, `$2`, … with the parameters passed as one
@@ -35,10 +36,18 @@ export interface PostgresTransaction {
 	<T>(callback: (transaction: PostgresExecutor) => Promise<T>): Promise<T>;
 	/** Begin with a stable snapshot (repeatable read); use for multi-statement reads that must observe one committed state. */
 	snapshot<T>(callback: (transaction: PostgresExecutor) => Promise<T>): Promise<T>;
+	/**
+	 * Exclusive maintenance transaction. Reject while any storage owns this schema,
+	 * including a storage opened on this facade. Hold the same advisory lock used
+	 * by acquireOwnership until commit/rollback. See docs/adapters.md.
+	 */
+	maintenance<T>(callback: (transaction: PostgresExecutor) => Promise<T>): Promise<T>;
 }
 
 export interface PostgresDatabase extends PostgresExecutor {
 	transaction: PostgresTransaction;
-	/** Release backend resources; all later operations must reject. */
+	/** Exclusively claim the database/schema until close; fail fast if already owned. */
+	acquireOwnership(): Promise<void>;
+	/** Seal admission, drain admitted operations, release ownership and resources. Idempotent. */
 	close(): Promise<void>;
 }

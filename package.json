@@ -1,11 +1,11 @@
 {
-  "name": "pi-durable-postgres",
+  "name": "@netzlabor/pi-durable-postgres",
   "version": "0.1.0",
   "description": "PostgreSQL storage backend for @earendil-works/pi-durable",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,30 +13,50 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
     }
   },
   "files": [
     "dist",
+    "src",
+    "docs",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "packageManager": "pnpm@10.16.1",
   "scripts": {
     "build": "tsc",
+    "prepack": "pnpm build",
+    "test:package": "node scripts/package-smoke.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint:types": "tsc --noEmit"
+    "lint:types": "tsc --noEmit && tsc -p tsconfig.test.json"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.0 <2",
-    "@earendil-works/pi-durable": ">=1.0.0 <2"
+    "@earendil-works/chord": "1.0.2",
+    "@earendil-works/pi-durable": "1.0.2"
   },
   "dependencies": {
+    "@types/pg": "^8.11.0",
     "pg": "^8.13.0"
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.0.0",
+    "@earendil-works/chord": "1.0.2",
     "@earendil-works/pi-durable": "1.0.2",
-    "@types/pg": "^8.11.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   },
@@ -48,8 +68,12 @@
     "agent",
     "durable"
   ],
+  "homepage": "https://github.com/j-koester/pi-durable-postgres#readme",
+  "bugs": {
+    "url": "https://github.com/j-koester/pi-durable-postgres/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/netzlabor/pi-durable-postgres"
+    "url": "git+https://github.com/j-koester/pi-durable-postgres.git"
   }
 }

@@ -1,4 +1,5 @@
 import type { PostgresDatabase } from "./database.js";
+import { lockMaintenance } from "./locking.js";
 
 export type PostgresMigration = {
 	readonly version: number;
@@ -10,7 +11,7 @@ export type PostgresMigration = {
  *
  * - Records are stored as JSON-encoded `text`, parsed client-side. This keeps
  *   byte-level round-trips faithful (no `jsonb` key reordering, no surrogate
- *   normalization) — the NL-17709 lesson. Hosts that need server-side JSON
+ *   normalization). Hosts that need server-side JSON
  *   queries can add an expression index or a generated `jsonb` column later
  *   without changing the storage contract.
  * - Indexed string columns (`kind`, `key_value`, `request_id`) store the
@@ -118,6 +119,8 @@ export async function applyPostgresMigrations(
 	}
 
 	await database.transaction(async (transaction) => {
+		// Reentrant for the owning storage; excludes migrations from other connections.
+		await lockMaintenance(transaction);
 		await transaction.exec(`CREATE TABLE IF NOT EXISTS durable_schema (
 			singleton integer PRIMARY KEY CHECK (singleton = 1),
 			version integer NOT NULL CHECK (version >= 0)

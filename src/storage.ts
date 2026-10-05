@@ -132,6 +132,7 @@ const writeId = (write: StorageWrite): Id<string> | undefined => {
 
 /** PostgreSQL implementation of the durable storage contract. */
 export class PostgresStorage implements Storage {
+	private static readonly openedDatabases = new WeakSet<PostgresDatabase>();
 	private readonly db: PostgresDatabase;
 	private nextId: number;
 	private closed = false;
@@ -146,7 +147,12 @@ export class PostgresStorage implements Storage {
 
 	/** Initialize storage over an owned PostgreSQL database facade. */
 	static async open(db: PostgresDatabase): Promise<PostgresStorage> {
+		// The facade is consumed by open, even when initialization fails. Do not let
+		// a duplicate open close the resources of the first, still-running storage.
+		if (this.openedDatabases.has(db)) throw new Error("This database has already been opened as storage");
+		this.openedDatabases.add(db);
 		try {
+			await db.acquireOwnership();
 			await applyPostgresMigrations(db);
 			const metadata = await db.get<MetadataRow>(
 				"SELECT next_id, next_seq FROM durable_metadata WHERE singleton = 1",

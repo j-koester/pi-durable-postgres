@@ -8,19 +8,19 @@ importers:
 
   .:
     dependencies:
+      '@types/pg':
+        specifier: ^8.11.0
+        version: 8.23.1
       pg:
         specifier: ^8.13.0
         version: 8.23.1
     devDependencies:
       '@earendil-works/chord':
-        specifier: 1.0.0
-        version: 1.0.0
+        specifier: 1.0.2
+        version: 1.0.2
       '@earendil-works/pi-durable':
         specifier: 1.0.2
         version: 1.0.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
-      '@types/pg':
-        specifier: ^8.11.0
-        version: 8.23.1
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -122,10 +122,6 @@ packages:
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
-
-  '@earendil-works/chord@1.0.0':
-    resolution: {integrity: sha512-BIfWfrByM0pKq6tfKYXuwx0ed2CvaqIM3EDA7Dps+fP+d3CiPWdlHi1cDsJC05llqKJoRz5//G0hz0yQwwjISQ==}
-    engines: {node: '>=22.19.0'}
 
   '@earendil-works/chord@1.0.2':
     resolution: {integrity: sha512-eUXGZjigyEQsFiT/oBJUOaCrzYZRmqf8AgLrlbyuS4u02hjSVhLYRi3xqk1o4UERCgRfjRegqwj/oucawIR7YQ==}
@@ -1191,10 +1187,6 @@ snapshots:
   '@aws/lambda-invoke-store@0.3.0': {}
 
   '@babel/runtime@7.29.7': {}
-
-  '@earendil-works/chord@1.0.0':
-    dependencies:
-      esbuild: 0.28.2
 
   '@earendil-works/chord@1.0.2':
     dependencies:

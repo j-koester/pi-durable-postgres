@@ -1,54 +1,64 @@
+import { randomUUID } from "node:crypto";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import pg from "pg";
-import type { Pool } from "pg";
-import type { PostgresStorage } from "../src/index.js";
-import { applyPostgresMigrations } from "../src/migrations.js";
-import { nodePostgresDatabase, openNodePostgresStorage } from "../src/node.js";
+import { PostgresStorage } from "../src/storage.js";
+import { nodePostgresDatabase } from "../src/node.js";
 
-const connectionString =
+export const connectionString =
 	process.env.PI_DURABLE_POSTGRES_TEST_URL ?? "postgres://postgres:postgres@localhost:5433/postgres";
 
-function parseInt8(pool: Pool): void {
-	pool.types.setTypeParser(20, (value: string) => {
-		const parsed = Number.parseInt(value, 10);
-		if (!Number.isSafeInteger(parsed)) throw new Error(`bigint value out of range: ${value}`);
-		return parsed;
-	});
+/** Every fixture owns a random schema. Never truncate or drop application tables. */
+export async function testDatabase() {
+	const admin = new pg.Pool({ connectionString, max: 1 });
+	const schema = `durable_test_${randomUUID().replaceAll("-", "")}`;
+	try {
+		await admin.query(`CREATE SCHEMA "${schema}"`);
+	} catch (error) {
+		await admin.end();
+		throw error;
+	}
+	const config: pg.PoolConfig = { connectionString, options: `-c search_path=${schema}`, max: 1 };
+	const databases = new Set<ReturnType<typeof nodePostgresDatabase>>();
+	const storages = new Set<PostgresStorage>();
+	const createDatabase = () => {
+		const database = nodePostgresDatabase(new pg.Pool(config));
+		databases.add(database);
+		return database;
+	};
+	const openStorage = async () => {
+		const database = createDatabase();
+		const storage = await PostgresStorage.open(database);
+		storages.add(storage);
+		return { storage, database };
+	};
+	return {
+		config,
+		createDatabase,
+		openStorage,
+		async cleanup() {
+			try {
+				await Promise.all([...storages].map((storage) => storage.close(BACKGROUND_CONTEXT)));
+				await Promise.all([...databases].map((database) => database.close()));
+				await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
+			} finally {
+				await admin.end();
+			}
+		},
+	};
 }
 
-/** Truncate every storage table and reseed the metadata row. */
-export async function resetSchema(pool: Pool): Promise<void> {
-	const client = await pool.connect();
+export async function freshStorage() {
+	const fixture = await testDatabase();
 	try {
-		await client.query("BEGIN");
-		await client.query(
-			"TRUNCATE document_revisions, documents, submissions, tasks, entries, conversations, record_ids, durable_metadata",
-		);
-		await client.query("INSERT INTO durable_metadata (singleton, next_id, next_seq) VALUES (1, 2, 1)");
-		await client.query("COMMIT");
+		return { ...fixture, ...await fixture.openStorage() };
 	} catch (error) {
-		await client.query("ROLLBACK").catch(() => undefined);
+		await fixture.cleanup();
 		throw error;
-	} finally {
-		client.release();
 	}
 }
 
-/**
- * Open a storage over a fresh pool on the shared test database, with a clean schema.
- * The returned storage owns its pool; closing the storage ends it. The `database`
- * facade wraps the same pool for host utilities (deletion) without owning it.
- */
-export async function freshStorage(): Promise<{
-	storage: PostgresStorage;
-	database: ReturnType<typeof nodePostgresDatabase>;
-}> {
-	const pool = new pg.Pool({ connectionString, max: 2 });
-	const database = nodePostgresDatabase(pool);
-	// Idempotent: creates the schema on the first run against an empty database.
-	await applyPostgresMigrations(database);
-	await resetSchema(pool);
-	const storage = await openNodePostgresStorage({ pool });
-	return { storage, database };
+export function deferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => { resolve = done; });
+	return { promise, resolve };
 }
-
-export { connectionString };

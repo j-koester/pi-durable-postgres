@@ -3,12 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.19.0", "24"]
 
     services:
       postgres:
@@ -27,47 +35,68 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Type-check
+      - run: pnpm install --frozen-lockfile
+      - name: Type-check source and tests
         run: pnpm lint:types
-
-      - name: Conformance + deletion tests
+      - name: Conformance and regression tests
         run: pnpm test
         env:
           PI_DURABLE_POSTGRES_TEST_URL: postgres://postgres:postgres@localhost:5432/postgres
+      - name: Pack, install and type-check an isolated consumer
+        run: pnpm test:package
 
   release:
     needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    environment: npm
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: "22.19.0"
           cache: pnpm
+          registry-url: "https://registry.npmjs.org"
       - run: pnpm install --frozen-lockfile
-      - name: Publish to npm on version tags
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Check release tag and package identity
         run: |
-          pnpm build
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+            if (pkg.name !== "@netzlabor/pi-durable-postgres" || process.env.GITHUB_REF_NAME !== "v" + pkg.version) {
+              throw new Error("Release tag must match the version of @netzlabor/pi-durable-postgres");
+            }
+          '
+      - name: Check for an existing publication of this commit
+        id: publication
+        run: |
+          node --input-type=module -e '
+            import { appendFileSync, readFileSync } from "node:fs";
+            const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+            const url = "https://registry.npmjs.org/" + encodeURIComponent(pkg.name) + "/" + pkg.version;
+            const response = await fetch(url);
+            if (response.status === 404) {
+              appendFileSync(process.env.GITHUB_OUTPUT, "published=false\n");
+            } else {
+              if (!response.ok) throw new Error("npm registry returned " + response.status);
+              const published = await response.json();
+              if (published.gitHead !== process.env.GITHUB_SHA) {
+                throw new Error("Version already exists but belongs to a different or unknown commit");
+              }
+              appendFileSync(process.env.GITHUB_OUTPUT, "published=true\n");
+              console.log("This exact commit is already published; skipping duplicate upload");
+            }
+          '
+      - name: Publish public scoped package
+        if: steps.publication.outputs.published != 'true'
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo "Configure the npm environment NPM_TOKEN secret"; exit 1; }
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

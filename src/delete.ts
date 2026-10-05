@@ -1,10 +1,10 @@
+import type { TaskRecord } from "@earendil-works/pi-durable";
 import type { PostgresDatabase, PostgresExecutor } from "./database.js";
 
 export type DeleteConversationOptions = {
 	/**
-	 * Delete conversations forked from the target (and their subtrees) as well.
-	 * When false (default), deleting a conversation that has forks is rejected,
-	 * because fork ancestry reads would break.
+	 * Delete all attached conversations (forks and task-owned conversations),
+	 * recursively. When false (default), reject if any are attached.
 	 */
 	readonly includeForks?: boolean;
 };
@@ -27,6 +27,10 @@ export type DeleteConversationResult = {
  * submissions, conversation-scoped documents, documents owned by its tasks, and
  * all document revisions. One transaction, all rows or none.
  *
+ * Maintenance only: close the owning Harness, then use a new database facade.
+ * Rejects while a storage owns the same database/schema. Live deletion requires
+ * upstream lifecycle coordination; this helper does not abort tasks or evict caches.
+ *
  * Notes:
  * - Attached conversations (forks and subagent conversations created in this
  *   conversation or by its tasks) are separate conversations. By default the
@@ -41,12 +45,16 @@ export async function deleteConversation(
 	conversationId: number,
 	options: DeleteConversationOptions = {},
 ): Promise<DeleteConversationResult> {
-	return database.transaction(async (tx) => {
+	if (!Number.isSafeInteger(conversationId) || conversationId < 1) {
+		throw new TypeError("conversationId must be a positive safe integer");
+	}
+	return database.transaction.maintenance(async (tx) => {
 		const conversationIds: number[] = [];
-		await collectConversationTree(tx, conversationId, options.includeForks ?? false, conversationIds, new Set());
+		await collectConversationTree(tx, conversationId, options.includeForks ?? false, conversationIds, new Set(), new Set());
 
 		const entryIds = await collectIds(tx, "SELECT id FROM entries WHERE conversation_id = ANY($1)", conversationIds);
 		const taskIds = await collectIds(tx, "SELECT id FROM tasks WHERE conversation_id = ANY($1)", conversationIds);
+		await assertNoExternalTaskReferences(tx, conversationIds, taskIds);
 		const submissionIds = await collectIds(
 			tx,
 			"SELECT id FROM submissions WHERE conversation_id = ANY($1)",
@@ -101,10 +109,12 @@ async function collectConversationTree(
 	conversationId: number,
 	includeSubtree: boolean,
 	order: number[],
-	seen: Set<number>,
+	visited: Set<number>,
+	active: Set<number>,
 ): Promise<void> {
-	if (seen.has(conversationId)) throw new Error(`Conversation tree is cyclic at ${conversationId}`);
-	seen.add(conversationId);
+	if (active.has(conversationId)) throw new Error(`Conversation graph is cyclic at ${conversationId}`);
+	if (visited.has(conversationId)) return;
+	active.add(conversationId);
 	const exists = await tx.get<{ readonly id: number }>("SELECT id FROM conversations WHERE id = $1", [
 		conversationId,
 	]);
@@ -123,9 +133,34 @@ async function collectConversationTree(
 				`Conversation ${conversationId} has attached conversations (for example ${child.id}); pass includeForks: true to remove the subtree`,
 			);
 		}
-		await collectConversationTree(tx, child.id, includeSubtree, order, seen);
+		await collectConversationTree(tx, child.id, includeSubtree, order, visited, active);
 	}
+	active.delete(conversationId);
+	visited.add(conversationId);
 	order.push(conversationId);
+}
+
+/** Do not strand a surviving task whose owner or wait target would be removed. */
+async function assertNoExternalTaskReferences(
+	tx: PostgresExecutor,
+	conversationIds: readonly number[],
+	taskIds: readonly number[],
+): Promise<void> {
+	if (taskIds.length === 0) return;
+	const removed = new Set(taskIds);
+	const rows = await tx.all<{ readonly record: string }>(
+		"SELECT record FROM tasks WHERE NOT (conversation_id = ANY($1))",
+		[[...conversationIds]],
+	);
+	for (const row of rows) {
+		// Parse client-side: task payloads may contain strings jsonb cannot represent.
+		const task = JSON.parse(row.record) as TaskRecord<unknown, unknown, unknown>;
+		const hasRemovedOwner = task.owner !== undefined && removed.has(task.owner);
+		const awaitsRemovedTask = task.state.status === "waiting" && task.state.on.some((id) => removed.has(id));
+		if (hasRemovedOwner || awaitsRemovedTask) {
+			throw new Error(`Surviving task ${task.id} references a task in the deletion set; resolve that dependency first`);
+		}
+	}
 }
 
 async function collectIds(tx: PostgresExecutor, sql: string, conversationIds: readonly number[]): Promise<number[]> {
