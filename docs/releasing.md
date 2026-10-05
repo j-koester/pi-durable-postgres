@@ -41,8 +41,17 @@ commit is rejected instead of treating it as a successful release. Publishing ru
 
 For the initial release, a maintainer may publish locally from the clean, committed
 release checkout using their existing npm login, then push the matching version
-tag. This does not transfer local npm credentials to GitHub. Subsequent automatic
-publishes of new versions still require the environment secret described above.
+tag. Explicitly override any private registry configured for the scope:
+
+```bash
+npm publish --access public --registry=https://registry.npmjs.org --@netzlabor:registry=https://registry.npmjs.org
+```
+
+A scoped registry can take precedence over the general registry setting. Check a
+`--dry-run` first; its target must be registry.npmjs.org. This per-command override
+does not change global npm configuration or transfer local credentials to GitHub.
+Subsequent automatic publishes of new versions still require the environment
+secret described above.
 
 The consumer smoke test creates an isolated temporary project, installs the real
 tarball, type-checks without skipLibCheck, and imports the compiled package. It
