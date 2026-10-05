@@ -1,0 +1,55 @@
+{
+  "name": "pi-durable-postgres",
+  "version": "0.1.0",
+  "description": "PostgreSQL storage backend for @earendil-works/pi-durable",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint:types": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": ">=1.0.0 <2",
+    "@earendil-works/pi-durable": ">=1.0.0 <2"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.0.0",
+    "@earendil-works/pi-durable": "1.0.2",
+    "@types/pg": "^8.11.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "pi-durable",
+    "pi-ai",
+    "postgres",
+    "postgresql",
+    "agent",
+    "durable"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/netzlabor/pi-durable-postgres"
+  }
+}
