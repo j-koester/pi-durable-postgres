@@ -33,7 +33,7 @@ is enforced with an advisory lock. Unrelated schemas may have separate owners.
 
 **Live deletion is not implemented yet.** The current delete helper refuses to run
 while a storage owns the schema. Safe live deletion also needs Harness admission,
-task, cache and watch coordination that Pi Durable 1.0.2 does not publicly expose.
+task, cache and watch coordination that Pi Durable 1.0.3 still does not publicly expose.
 See the [live-deletion design](docs/live-deletion.md) for the intended integration.
 
 ## Quick start
@@ -125,6 +125,22 @@ storage tables directly while a Harness owns them.
 - On shutdown, stop accepting application requests and await `harness.close(context)`.
   It closes storage after the Harness's admitted work settles. Database close drains
   already admitted operations and rejects new ones.
+
+### Progress commits (Pi Durable 1.0.3)
+
+Remote databases may benefit from less frequent intermediate progress writes.
+Pi Durable 1.0.3 adds a `settings.progress` option to `Harness.open`, for example:
+
+```typescript
+const settings = {
+  progress: { partialIntervalMs: 500, outputIntervalMs: 500 },
+};
+```
+
+The upstream defaults remain 100 ms. Larger intervals reduce intermediate
+progress-write frequency, but delay visible updates and widen the window of
+uncommitted partial text/tool output lost on a crash. This is a host-level tuning
+option, not a storage schema change; benchmark it for your workload.
 
 ## Conversation deletion: maintenance only
 

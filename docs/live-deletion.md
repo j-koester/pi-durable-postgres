@@ -1,7 +1,8 @@
 # Live conversation deletion: integration design
 
-**Status: proposal, not an implemented API.** Pi Durable 1.0.2 is the reference
-version inspected for this design. The current PostgreSQL helper is maintenance-only.
+**Status: proposal, not an implemented API.** Pi Durable 1.0.2 and 1.0.3 have been
+inspected for this design; neither provides the needed public lifecycle API.
+The current PostgreSQL helper is maintenance-only.
 
 ## Goal
 
@@ -19,7 +20,7 @@ submission admission, running tasks and recovery scheduling. SQL cannot evict
 these objects or prevent a still-running invocation from using a previously
 loaded document.
 
-The public 1.0.2 interfaces expose:
+The public 1.0.2 / 1.0.3 interfaces expose:
 
 - Session.commit / close / subscribeCommits / subscribeClose;
 - Conversation.abort (including background work when requested);

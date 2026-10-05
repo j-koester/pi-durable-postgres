@@ -25,7 +25,9 @@ OIDC requires configuring the matching repository/environment publisher in npm.
 - Run `pnpm install --frozen-lockfile`, `pnpm lint:types`, `pnpm test` and
   `pnpm test:package`.
 - Check the README compatibility table against actually tested peer versions.
-  Pi Durable is experimental: do not widen peer ranges on assumption alone.
+  Update the Pi Durable, Chord and Pi AI development pins together; the consumer
+  test takes its Pi AI version from package.json. Pi Durable is experimental:
+  do not widen peer ranges on assumption alone.
 - Review `npm pack --dry-run` output: JS, declarations, source-map sources,
   documentation and license must be included, but no secrets or test data.
 - Confirm live-deletion limitations and any changed adapter contracts are accurate.

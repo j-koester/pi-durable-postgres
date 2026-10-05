@@ -2,10 +2,15 @@
 
 ## 0.1.1 — 2026-10-05
 
-- Re-validated against Pi Durable and Chord 1.0.3. Upstream 1.0.3 changes are
-  confined to the ExecutionEnv layer (FileSystem, BinaryReader, Shell, tool
-  progress); the storage contract is unchanged. Full conformance suite green.
+- Re-validated against Pi Durable, Chord and Pi AI 1.0.3. Upstream changes include
+  ExecutionEnv APIs, configurable progress commits and output handling; the
+  storage contract and reference backends are unchanged. Full conformance and
+  regression suites pass.
 - Peer pins moved from 1.0.2 to 1.0.3 per the pinned-peer maintenance policy.
+- Fixed the consumer smoke test's stale Pi AI 1.0.2 pin: it now uses the declared
+  development dependency, avoiding incompatible duplicate model-registry types.
+- Documented progress-write tuning and confirmed that 1.0.3 still has no public
+  live-deletion lifecycle API.
 
 ## 0.1.0 — 2026-10-05
 

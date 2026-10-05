@@ -22,7 +22,8 @@ try {
 		type: "module",
 		dependencies: {
 			[manifest.name]: `file:${join(work, tarball)}`,
-			"@earendil-works/pi-ai": "1.0.2",
+			// Keep the example model registry aligned with the validated upstream dependency set.
+			"@earendil-works/pi-ai": manifest.devDependencies["@earendil-works/pi-ai"],
 		},
 		devDependencies: {
 			typescript: manifest.devDependencies.typescript,
