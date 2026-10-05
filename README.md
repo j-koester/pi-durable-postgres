@@ -21,6 +21,14 @@ validated upstream release. Other PostgreSQL versions and drivers are not yet
 validated. ESM JavaScript and TypeScript declarations are published; no CommonJS
 build is provided.
 
+**Why `@types/pg` is a runtime dependency:** the adapter's public surface
+exposes pg types (`NodePostgresStorageOptions.pool` / `config`), so the
+published `.d.ts` declarations reference them. TypeScript consumers need
+`@types/pg` to compile against this package; keeping it in `dependencies`
+(instead of `devDependencies`) makes that work without manual installation.
+This is deliberate — revisit as an optional peer dependency only if
+JavaScript-only consumers object to the extra install.
+
 ## Why PostgreSQL?
 
 For applications already operating PostgreSQL, this backend keeps agent state

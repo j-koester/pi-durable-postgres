@@ -1,0 +1,20 @@
+# Upstream release validation (see docs/releasing.md).
+#
+# The @earendil-works dev pins are exact by policy: every new upstream release
+# must pass the full conformance and regression suite before the peer pins move.
+# Dependabot opens the PR with the dev-dependency bump; CI validates it; the
+# peer pin bump belongs in the same PR once the suite is green.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: "@earendil-works/*"
+    labels:
+      - upstream
+    commit-message:
+      prefix: "chore(deps)"
+    reviewers:
+      - j-koester

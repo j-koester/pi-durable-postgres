@@ -19,6 +19,14 @@ The workflow configures npm's registry authentication through setup-node. It doe
 not currently use trusted publishing/OIDC or claim npm provenance. Migrating to
 OIDC requires configuring the matching repository/environment publisher in npm.
 
+## Upstream release watch
+
+Dependabot (`.github/dependabot.yml`) opens a PR when a new `@earendil-works`
+release appears, by bumping the exact **dev** pins. Dependabot does not touch
+`peerDependencies`; move the peer pin in the same PR once CI is green, together
+with the README compatibility table and a CHANGELOG entry. Never merge on
+assumption — the conformance suite is the gate.
+
 ## Release checklist
 
 - Update package version and CHANGELOG.md.
