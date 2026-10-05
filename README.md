@@ -13,7 +13,8 @@ application's package manager, not `pi install`.
 
 | Package | Pi Durable / Chord | Runtime | Database |
 |---|---|---|---|
-| 0.1.x | 1.0.2 / 1.0.2 | Node.js >=22.19.0 | PostgreSQL 17 tested |
+| 0.1.0 | 1.0.2 / 1.0.2 | Node.js >=22.19.0 | PostgreSQL 17 tested |
+| 0.1.1 | 1.0.3 / 1.0.3 | Node.js >=22.19.0 | PostgreSQL 17 tested |
 
 CI targets Node 22.19.0 and 24. Peer versions are deliberately pinned to the
 validated upstream release. Other PostgreSQL versions and drivers are not yet
@@ -40,7 +41,7 @@ See the [live-deletion design](docs/live-deletion.md) for the intended integrati
 Install the alpha release:
 
 ```bash
-npm install @netzlabor/pi-durable-postgres @earendil-works/pi-durable@1.0.2 @earendil-works/chord@1.0.2 @earendil-works/pi-ai@1.0.2
+npm install @netzlabor/pi-durable-postgres @earendil-works/pi-durable@1.0.3 @earendil-works/chord@1.0.3 @earendil-works/pi-ai@1.0.3
 export DATABASE_URL='postgres://app:password@localhost:5432/agent_state'
 ```
 
@@ -219,7 +220,7 @@ and the [changelog](CHANGELOG.md).
 ## License and attribution
 
 [MIT](LICENSE). The storage core and initial schema are adapted from Pi Durable's
-MIT-licensed SQLite implementation (validated against 1.0.2):
+MIT-licensed SQLite implementation (validated against 1.0.2 and 1.0.3):
 [storage](https://github.com/earendil-works/pi/blob/main/packages/durable/src/storage/sqlite/storage.ts)
 and [migrations](https://github.com/earendil-works/pi/blob/main/packages/durable/src/storage/sqlite/migrations.ts).
 The upstream copyright notice is retained in our license. PostgreSQL-specific

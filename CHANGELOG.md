@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-10-05
+
+- Re-validated against Pi Durable and Chord 1.0.3. Upstream 1.0.3 changes are
+  confined to the ExecutionEnv layer (FileSystem, BinaryReader, Shell, tool
+  progress); the storage contract is unchanged. Full conformance suite green.
+- Peer pins moved from 1.0.2 to 1.0.3 per the pinned-peer maintenance policy.
+
 ## 0.1.0 — 2026-10-05
 
 Initial alpha, published as npm `@netzlabor/pi-durable-postgres` and source repository
