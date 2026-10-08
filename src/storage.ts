@@ -80,6 +80,13 @@ const page = <T extends { readonly id: Id<string> }>(values: readonly T[], limit
 	return { items, next: { after: items.at(-1)!.id } };
 };
 
+/** Page with an order-carrying cursor for correct continuation. */
+const pageOrdered = <T extends { readonly id: Id<string> }>(values: readonly T[], limit: number, order: "ascending" | "descending"): Page<T, Cursor> => {
+	const items = values.slice(0, limit);
+	if (values.length <= limit) return { items };
+	return { items, next: orderedCursor(items.at(-1)!.id, order) };
+};
+
 const scopeColumns = (scope: DocumentRecord["scope"]): ScopeColumns => {
 	switch (scope.kind) {
 		case "session":
@@ -129,6 +136,37 @@ const writeId = (write: StorageWrite): Id<string> | undefined => {
 			return undefined;
 	}
 };
+
+
+/** Resolve the effective scan order: cursor's order wins over query's order; default if neither. */
+function resolveOrder(
+	query: { readonly order?: string },
+	cursor: { readonly order?: unknown } | undefined,
+	defaultOrder: 'ascending' | 'descending',
+): 'ascending' | 'descending' {
+	const cursorOrder = typeof cursor?.order === 'string' && (cursor.order === 'ascending' || cursor.order === 'descending')
+		? cursor.order
+		: undefined
+	const queryOrder = query.order === 'ascending' || query.order === 'descending'
+		? query.order
+		: undefined
+	if (cursorOrder !== undefined && queryOrder !== undefined && cursorOrder !== queryOrder) {
+		throw new Error(`cursor order mismatch: cursor has "${cursorOrder}" but query requests "${queryOrder}"`)
+	}
+	return cursorOrder ?? queryOrder ?? defaultOrder
+}
+
+/** Create a cursor that carries the scan order for correct continuation. */
+function orderedCursor(id: number, order: 'ascending' | 'descending'): { readonly after: number, readonly order: string } {
+	return { after: id, order }
+}
+
+/** Read the `after` value from a cursor (the last returned ID). */
+function cursorAfterId(cursor: { readonly after?: unknown } | undefined): number | undefined {
+	const after = cursor?.after
+	if (typeof after !== 'number' || !Number.isSafeInteger(after)) return undefined
+	return after
+}
 
 /** PostgreSQL implementation of the durable storage contract. */
 export class PostgresStorage implements Storage {
@@ -214,8 +252,22 @@ export class PostgresStorage implements Storage {
 		_context: Context,
 	): Promise<Page<ConversationRecord, Cursor>> {
 		this.assertOpen();
-		const clauses = ["id > $1"];
-		const params: unknown[] = [cursorId(cursor) ?? -1];
+		const order = resolveOrder(query, cursor, 'ascending');
+		const after = cursorAfterId(cursor);
+		const clauses: string[] = [];
+		const params: unknown[] = [];
+		if (after !== undefined) {
+			clauses.push(order === 'ascending' ? "id > $1" : "id < $1");
+			params.push(after);
+		}
+		else if (order === 'ascending') {
+			clauses.push("id > $1");
+			params.push(-1);
+		}
+		else {
+			clauses.push("id < $1");
+			params.push(Number.MAX_SAFE_INTEGER);
+		}
 		if (query.ownerConversationId !== undefined) {
 			clauses.push("owner_conversation_id = $" + (params.push(query.ownerConversationId)));
 		}
@@ -223,13 +275,15 @@ export class PostgresStorage implements Storage {
 			clauses.push("owner_task_id = $" + (params.push(query.ownerTaskId)));
 		}
 		const limitIndex = params.push(limit + 1);
+		const direction = order === 'ascending' ? 'ASC' : 'DESC';
 		const rows = await this.db.all<JsonRow>(
-			`SELECT record FROM conversations WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT $${limitIndex}`,
+			`SELECT record FROM conversations WHERE ${clauses.join(" AND ")} ORDER BY id ${direction} LIMIT $${limitIndex}`,
 			params,
 		);
-		return page(
+		return pageOrdered(
 			rows.map((row) => parseJson<ConversationRecord>(row.record)),
 			limit,
+			order,
 		);
 	}
 
@@ -332,10 +386,44 @@ export class PostgresStorage implements Storage {
 	): Promise<Page<EntryRecord, Cursor>> {
 		let conversation = await this.readConversation(query.conversationId);
 		if (conversation === undefined) throw new Error(`Unknown conversation: ${query.conversationId}`);
-		const after = cursorId(cursor);
-		let upper: number | undefined = query.maxEntryId;
-		if (after !== undefined) upper = Math.min(upper ?? Number.MAX_SAFE_INTEGER, after - 1);
+		const order = resolveOrder(query, cursor, 'descending');
+		const after = cursorAfterId(cursor);
 		const values: EntryRecord[] = [];
+
+		if (order === 'descending') {
+			// Newest-first: walk the ancestry from current to parent (same as before),
+			// scanning DESC within each conversation, stopping at the fork point.
+			let upper: number | undefined = query.maxEntryId;
+			if (after !== undefined) upper = Math.min(upper ?? Number.MAX_SAFE_INTEGER, after - 1);
+			while (true) {
+				const clauses = ["conversation_id = $1"];
+				const params: unknown[] = [conversation.id];
+				if (query.minEntryId !== undefined) {
+					clauses.push(`id >= $${params.push(query.minEntryId)}`);
+				}
+				if (upper !== undefined) {
+					clauses.push(`id <= $${params.push(upper)}`);
+				}
+				const limitIndex = params.push(limit + 1 - values.length);
+				const rows = await this.db.all<JsonRow>(
+					`SELECT record FROM entries WHERE ${clauses.join(" AND ")} ORDER BY id DESC LIMIT $${limitIndex}`,
+					params,
+				);
+				values.push(...rows.map((row) => parseJson<EntryRecord>(row.record)));
+				if (values.length > limit || conversation.parent === undefined) break;
+				upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
+				if (query.minEntryId !== undefined && upper < query.minEntryId) break;
+				conversation = (await this.readConversation(conversation.parent.conversationId))!;
+			}
+			return pageOrdered(values, limit, order);
+		}
+
+		// Ascending: use the SAME ancestry walk as descending (collecting ALL
+		// visible entries from current through every ancestor, capped at fork
+		// points). Then filter (cursor, min/max bounds), reverse, and page.
+		// The cursor's `after` in ascending order means: already returned
+		// everything UP TO that ID; continue with IDs strictly above it.
+		let upper: number | undefined = query.maxEntryId;
 		while (true) {
 			const clauses = ["conversation_id = $1"];
 			const params: unknown[] = [conversation.id];
@@ -345,18 +433,24 @@ export class PostgresStorage implements Storage {
 			if (upper !== undefined) {
 				clauses.push(`id <= $${params.push(upper)}`);
 			}
-			const limitIndex = params.push(limit + 1 - values.length);
 			const rows = await this.db.all<JsonRow>(
-				`SELECT record FROM entries WHERE ${clauses.join(" AND ")} ORDER BY id DESC LIMIT $${limitIndex}`,
+				`SELECT record FROM entries WHERE ${clauses.join(" AND ")} ORDER BY id DESC`,
 				params,
 			);
 			values.push(...rows.map((row) => parseJson<EntryRecord>(row.record)));
-			if (values.length > limit || conversation.parent === undefined) break;
+			if (conversation.parent === undefined) break;
 			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
 			if (query.minEntryId !== undefined && upper < query.minEntryId) break;
 			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 		}
-		return page(values, limit);
+		// Sort ascending (the walk collected newest-first)
+		values.sort((a, b) => (a.id as number) - (b.id as number));
+		// Apply the ascending cursor: skip entries with ID <= cursor.after
+		const start = after !== undefined
+			? values.findIndex(v => (v.id as number) > after)
+			: 0;
+		const filtered = start === -1 ? [] : values.slice(start);
+		return pageOrdered(filtered, limit, order);
 	}
 
 	async task(id: TaskId, _context: Context): Promise<StoredTask | undefined> {
@@ -372,8 +466,22 @@ export class PostgresStorage implements Storage {
 		_context: Context,
 	): Promise<Page<StoredTask, Cursor>> {
 		this.assertOpen();
-		const clauses = ["id > $1"];
-		const params: unknown[] = [cursorId(cursor) ?? -1];
+		const order = resolveOrder(query, cursor, 'ascending');
+		const after = cursorAfterId(cursor);
+		const clauses: string[] = [];
+		const params: unknown[] = [];
+		if (after !== undefined) {
+			clauses.push(order === 'ascending' ? "id > $1" : "id < $1");
+			params.push(after);
+		}
+		else if (order === 'ascending') {
+			clauses.push("id > $1");
+			params.push(-1);
+		}
+		else {
+			clauses.push("id < $1");
+			params.push(Number.MAX_SAFE_INTEGER);
+		}
 		if (query.conversationId !== undefined) {
 			clauses.push(`conversation_id = $${params.push(query.conversationId)}`);
 		}
@@ -390,13 +498,15 @@ export class PostgresStorage implements Storage {
 			clauses.push(`background = $${params.push(query.background)}`);
 		}
 		const limitIndex = params.push(limit + 1);
+		const direction = order === 'ascending' ? 'ASC' : 'DESC';
 		const rows = await this.db.all<JsonRow>(
-			`SELECT record FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT $${limitIndex}`,
+			`SELECT record FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY id ${direction} LIMIT $${limitIndex}`,
 			params,
 		);
-		return page(
+		return pageOrdered(
 			rows.map((row) => parseJson<StoredTask>(row.record)),
 			limit,
+			order,
 		);
 	}
 
@@ -413,8 +523,22 @@ export class PostgresStorage implements Storage {
 		_context: Context,
 	): Promise<Page<SubmissionRecord, Cursor>> {
 		this.assertOpen();
-		const clauses = ["id > $1"];
-		const params: unknown[] = [cursorId(cursor) ?? -1];
+		const order = resolveOrder(query, cursor, 'ascending');
+		const after = cursorAfterId(cursor);
+		const clauses: string[] = [];
+		const params: unknown[] = [];
+		if (after !== undefined) {
+			clauses.push(order === 'ascending' ? "id > $1" : "id < $1");
+			params.push(after);
+		}
+		else if (order === 'ascending') {
+			clauses.push("id > $1");
+			params.push(-1);
+		}
+		else {
+			clauses.push("id < $1");
+			params.push(Number.MAX_SAFE_INTEGER);
+		}
 		if (query.conversationId !== undefined) {
 			clauses.push(`conversation_id = $${params.push(query.conversationId)}`);
 		}
@@ -422,13 +546,15 @@ export class PostgresStorage implements Storage {
 			clauses.push(`status = $${params.push(query.status)}`);
 		}
 		const limitIndex = params.push(limit + 1);
+		const direction = order === 'ascending' ? 'ASC' : 'DESC';
 		const rows = await this.db.all<JsonRow>(
-			`SELECT record FROM submissions WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT $${limitIndex}`,
+			`SELECT record FROM submissions WHERE ${clauses.join(" AND ")} ORDER BY id ${direction} LIMIT $${limitIndex}`,
 			params,
 		);
-		return page(
+		return pageOrdered(
 			rows.map((row) => parseJson<SubmissionRecord>(row.record)),
 			limit,
+			order,
 		);
 	}
 
