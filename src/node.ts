@@ -67,6 +67,8 @@ class PoolDatabase implements PostgresDatabase {
 			this.client = await this.pool.connect();
 			// A disconnected owner must never reconnect silently and lose its lock.
 			this.client.on("error", (error: Error) => { this.failure = error; });
+			// A server-side termination can end the socket without a separate error event.
+			this.client.on("end", () => { this.failure ??= new Error("PostgreSQL connection ended"); });
 		}
 		return this.client;
 	}
