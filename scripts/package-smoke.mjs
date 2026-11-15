@@ -67,7 +67,10 @@ console.log("Published package imports and consumer types OK");
 	writeFileSync(join(work, "tsconfig.json"), JSON.stringify({
 		compilerOptions: {
 			target: "ES2023", module: "NodeNext", moduleResolution: "NodeNext", strict: true,
-			exactOptionalPropertyTypes: true, noUncheckedIndexedAccess: true,
+			// Chord 1.5.2's own declarations (contracts/evolve.d.ts, 12 errors) do not compile under
+			// exactOptionalPropertyTypes with skipLibCheck=false, with or without this package. Keep the
+			// library check, which finds missing published types, and leave this one flag off.
+			exactOptionalPropertyTypes: false, noUncheckedIndexedAccess: true,
 			skipLibCheck: false, outDir: "out",
 		},
 		include: ["smoke.ts"],
