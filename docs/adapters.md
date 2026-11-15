@@ -35,7 +35,11 @@ hashtextextended('pi-durable-postgres:' || current_schema(), 0)
 - `acquireOwnership()`: use `pg_try_advisory_lock(key)` on a pinned connection.
   Hold the session lock until close. Fail fast on contention or a missing schema.
 - All of an owner's writes must use that session. Do not transparently reconnect
-  if it disconnects: the ownership lock may have been lost.
+  if it disconnects: the ownership lock may have been lost. Once the connection
+  errors or ends, every later call rejects and the server has already released the lock.
+- Deployment: connect directly (CloudNativePG `-rw` service) or through a
+  session-mode pooler. A transaction-mode pooler may hand each statement to a
+  different backend, so the session lock and the pinned transaction no longer match.
 - `transaction.maintenance`: reject if the facade itself already owns a store;
   session advisory locks are reentrant, so SQL alone cannot detect this case.
   Otherwise acquire `pg_try_advisory_xact_lock(key)` inside the transaction and

@@ -15,6 +15,9 @@ application's package manager, not `pi install`.
 |---|---|---|---|
 | 0.1.0 | 1.0.2 / 1.0.2 | Node.js >=22.19.0 | PostgreSQL 17 tested |
 | 0.1.1 | 1.0.3 / 1.0.3 | Node.js >=22.19.0 | PostgreSQL 17 tested |
+| unreleased (`port-pi-durable-1.5`) | 1.5.2 / 1.5.2, exact | Node.js >=22.19.0 | PostgreSQL 17 tested |
+
+The 1.5 storage contract changes are listed in [docs/port-1.5.md](docs/port-1.5.md).
 
 CI targets Node 22.19.0 and 24. Peer versions are deliberately pinned to the
 validated upstream release. Other PostgreSQL versions and drivers are not yet
@@ -41,7 +44,7 @@ is enforced with an advisory lock. Unrelated schemas may have separate owners.
 
 **Live deletion is not implemented yet.** The current delete helper refuses to run
 while a storage owns the schema. Safe live deletion also needs Harness admission,
-task, cache and watch coordination that Pi Durable 1.0.3 still does not publicly expose.
+task, cache and watch coordination that Pi Durable 1.5.2 still does not publicly expose.
 See the [live-deletion design](docs/live-deletion.md) for the intended integration.
 
 ## Quick start
@@ -49,7 +52,7 @@ See the [live-deletion design](docs/live-deletion.md) for the intended integrati
 Install the alpha release:
 
 ```bash
-npm install @netzlabor/pi-durable-postgres @earendil-works/pi-durable@1.0.3 @earendil-works/chord@1.0.3 @earendil-works/pi-ai@1.0.3
+npm install @netzlabor/pi-durable-postgres @earendil-works/pi-durable@1.5.2 @earendil-works/chord@1.5.2 @earendil-works/pi-ai@1.5.2
 export DATABASE_URL='postgres://app:password@localhost:5432/agent_state'
 ```
 
@@ -96,7 +99,8 @@ failure. Supply a separate pool for unrelated application data.
 
 The adapter pins **one connection** and serializes operations. `max: 1` is enough;
 a larger pool does not increase storage concurrency. Use a direct PostgreSQL
-connection or session pooling. **PgBouncer transaction pooling and reconnecting
+connection or session pooling: with CloudNativePG, the cluster's `-rw` service, or
+a `Pooler` with `poolMode: session`. **PgBouncer transaction pooling and reconnecting
 proxies are not supported**, because ownership is a session advisory lock. A lost
 connection fails closed; stop the Harness and explicitly reopen/recover it rather
 than reusing its stale in-memory state.

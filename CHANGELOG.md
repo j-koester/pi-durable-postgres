@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Ported to Pi Durable, Chord and Pi AI 1.5.2, pinned exactly (peer and dev). See `docs/port-1.5.md`.
+- `commit(batches, receive, context)` returns a `CommitResult`: all batches in one transaction, one seq each, the first
+  refused batch ends the call, receipts after `COMMIT`. A database failure rejects the call instead of refusing a batch.
+- Invalid read requests (unknown conversation, malformed cursor or scan order) throw `StorageRequestError`; a malformed
+  cursor is no longer ignored. `StorageRejected` no longer exists upstream.
+- Schema version 2 allows the `sleeping` task status. Databases migrated by this release cannot be opened by earlier ones.
+- Connection `end` now also marks the owner failed. New tests: ownership lock and fail-closed behaviour under
+  `pg_terminate_backend`, batched commit refusals, the version 2 migration.
+
 ## 0.1.1 — 2026-10-05
 
 - Re-validated against Pi Durable, Chord and Pi AI 1.0.3. Upstream changes include
