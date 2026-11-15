@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ConversationId, Seq, Storage } from "@earendil-works/pi-durable";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import pg from "pg";
 import { PostgresStorage } from "../src/storage.js";
 import { nodePostgresDatabase } from "../src/node.js";
@@ -61,4 +63,10 @@ export function deferred() {
 	let resolve!: () => void;
 	const promise = new Promise<void>((done) => { resolve = done; });
 	return { promise, resolve };
+}
+
+/** Smallest write the contract allows (a batch has at least one write); resolves with its seq. */
+export async function touch(storage: Storage): Promise<Seq> {
+	const id = await storage.mintId<ConversationId>();
+	return commitWrites(storage, [{ type: "conversation", value: { id } }], BACKGROUND_CONTEXT);
 }

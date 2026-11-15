@@ -98,9 +98,20 @@ const INITIAL_SCHEMA: readonly string[] = [
 	"CREATE INDEX document_revisions_by_kind ON document_revisions (document_id, kind, seq DESC)",
 ];
 
+/**
+ * Version 2 adds the `sleeping` task status (Pi Durable 1.4.0, `TaskRuntime.sleepUntil()`), as the SQLite reference's
+ * schema version 2 does. The constraint is named by PostgreSQL's default for the column check of version 1.
+ */
+const SLEEPING_STATUS: readonly string[] = [
+	"ALTER TABLE tasks DROP CONSTRAINT tasks_status_check",
+	`ALTER TABLE tasks ADD CONSTRAINT tasks_status_check
+		CHECK (status IN ('pending', 'running', 'waiting', 'sleeping', 'completing', 'terminal'))`,
+];
+
 /** Immutable, ordered schema history. Append new migrations after the initial schema ships. */
 export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [
 	{ version: 1, statements: INITIAL_SCHEMA },
+	{ version: 2, statements: SLEEPING_STATUS },
 ];
 
 export const CURRENT_POSTGRES_SCHEMA_VERSION = POSTGRES_MIGRATIONS.at(-1)?.version ?? 0;

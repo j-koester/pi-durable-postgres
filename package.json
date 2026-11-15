@@ -47,17 +47,17 @@
     "lint:types": "tsc --noEmit && tsc -p tsconfig.test.json"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.1.0 <2",
-    "@earendil-works/pi-durable": ">=1.1.0 <2"
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2"
   },
   "dependencies": {
     "@types/pg": "^8.11.0",
     "pg": "^8.13.0"
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.1.0",
-    "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0",
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
   },

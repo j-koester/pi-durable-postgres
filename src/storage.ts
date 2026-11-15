@@ -1,7 +1,9 @@
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { apply, type Op } from "@earendil-works/chord/delta";
-import { StorageRejected, type Storage } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord/json";
+import { StorageRequestError, type Storage } from "@earendil-works/pi-durable";
 import type {
+	CommitResult,
 	ConversationId,
 	ConversationQuery,
 	ConversationRecord,
@@ -70,7 +72,7 @@ const encodeIndexedString = (value: string): string => JSON.stringify(value);
 const cursorId = <I extends Id<string>>(cursor: Cursor | undefined): I | undefined => {
 	const after = cursor?.after;
 	if (after === undefined) return undefined;
-	if (typeof after !== "number" || !Number.isSafeInteger(after)) throw new TypeError("Invalid storage cursor");
+	if (typeof after !== "number" || !Number.isSafeInteger(after)) throw new StorageRequestError("Invalid storage cursor");
 	return idFromNumber<I>(after);
 };
 
@@ -138,34 +140,58 @@ const writeId = (write: StorageWrite): Id<string> | undefined => {
 };
 
 
-/** Resolve the effective scan order: cursor's order wins over query's order; default if neither. */
-function resolveOrder(
+type ScanOrder = "ascending" | "descending";
+
+/**
+ * Resolve where a scan starts, like upstream's `scanStart`: the cursor carries the order it continues, a query that asks
+ * for another order is refused, and a malformed order or cursor is an invalid request, never a silent default.
+ */
+function scanStart(
 	query: { readonly order?: string },
-	cursor: { readonly order?: unknown } | undefined,
-	defaultOrder: 'ascending' | 'descending',
-): 'ascending' | 'descending' {
-	const cursorOrder = typeof cursor?.order === 'string' && (cursor.order === 'ascending' || cursor.order === 'descending')
-		? cursor.order
-		: undefined
-	const queryOrder = query.order === 'ascending' || query.order === 'descending'
-		? query.order
-		: undefined
-	if (cursorOrder !== undefined && queryOrder !== undefined && cursorOrder !== queryOrder) {
-		throw new Error(`cursor order mismatch: cursor has "${cursorOrder}" but query requests "${queryOrder}"`)
+	cursor: Cursor | undefined,
+	fallback: ScanOrder,
+): { readonly order: ScanOrder; readonly after: number | undefined } {
+	const requested = query.order;
+	if (requested !== undefined && requested !== "ascending" && requested !== "descending") {
+		throw new StorageRequestError(`Invalid scan order: ${String(requested)}`);
 	}
-	return cursorOrder ?? queryOrder ?? defaultOrder
+	if (cursor === undefined) return { order: requested ?? fallback, after: undefined };
+	const { after, order: stored } = cursor;
+	if (typeof after !== "number" || !Number.isSafeInteger(after)) throw new StorageRequestError("Invalid storage cursor");
+	if (stored !== undefined && stored !== "ascending" && stored !== "descending") {
+		throw new StorageRequestError("Invalid storage cursor");
+	}
+	const order = stored ?? fallback;
+	if (requested !== undefined && requested !== order) {
+		throw new StorageRequestError(`The cursor continues a ${order} scan; the query asks for ${requested}`);
+	}
+	return { order, after };
 }
 
 /** Create a cursor that carries the scan order for correct continuation. */
-function orderedCursor(id: number, order: 'ascending' | 'descending'): { readonly after: number, readonly order: string } {
-	return { after: id, order }
+function orderedCursor(id: number, order: ScanOrder): { readonly after: number; readonly order: string } {
+	return { after: id, order };
 }
 
-/** Read the `after` value from a cursor (the last returned ID). */
-function cursorAfterId(cursor: { readonly after?: unknown } | undefined): number | undefined {
-	const after = cursor?.after
-	if (typeof after !== 'number' || !Number.isSafeInteger(after)) return undefined
-	return after
+/** Whether a database call of the checks failed, whatever it threw or rejected with. */
+type CheckCalls = { failed: boolean };
+
+/** `executor`, setting `calls.failed` when one of its calls fails: then a failing check is the database's, not Durable's. */
+function watchCalls(executor: PostgresExecutor, calls: CheckCalls): PostgresExecutor {
+	const watched = async <T>(call: () => Promise<T>): Promise<T> => {
+		try {
+			return await call();
+		} catch (error) {
+			calls.failed = true;
+			throw error;
+		}
+	};
+	return {
+		exec: (sql) => watched(() => executor.exec(sql)),
+		run: (sql, params) => watched(() => executor.run(sql, params)),
+		get: <T>(sql: string, params: readonly unknown[]) => watched(() => executor.get<T>(sql, params)),
+		all: <T>(sql: string, params: readonly unknown[]) => watched(() => executor.all<T>(sql, params)),
+	};
 }
 
 /** PostgreSQL implementation of the durable storage contract. */
@@ -208,29 +234,101 @@ export class PostgresStorage implements Storage {
 		}
 	}
 
-	async commit(writes: readonly StorageWrite[], _context: Context): Promise<Seq> {
+	/**
+	 * Store `batches` in one SQL transaction, each with its own seq. Each batch is checked before it writes anything,
+	 * against the state the earlier ones left (they are in the same transaction), and the first one Durable's own checks
+	 * refuse ends the call: the transaction commits the batches before it. A failing database call is not a refusal: it
+	 * rejects the call and rolls everything back. `receive` runs only once `COMMIT` returned.
+	 */
+	async commit(
+		batches: readonly (readonly StorageWrite[])[],
+		receive: (index: number, seq: Seq) => void,
+		_context: Context,
+	): Promise<CommitResult> {
 		this.assertOpen();
-		const documentActions = this.prepareDocumentActions(writes);
-		const candidateNextId = this.candidateNextId(writes);
-		const seq = await this.db.transaction(async (transaction) => {
+		const seqs: Seq[] = [];
+		let refused: { readonly error: unknown } | undefined;
+		let candidateNextId = this.nextId;
+		await this.db.transaction(async (transaction) => {
+			seqs.length = 0;
+			refused = undefined;
+			candidateNextId = this.nextId;
 			const metadata = await transaction.get<MetadataRow>(
 				"SELECT next_id, next_seq FROM durable_metadata WHERE singleton = 1",
 				[],
 			);
 			if (metadata === undefined) throw new Error("pi-durable-postgres metadata is missing");
-			const committedSeq = seqFromNumber(metadata.next_seq);
-			await this.checkGlobalIds(transaction, writes);
-			await this.checkDocumentActions(transaction, documentActions);
-			for (const write of writes) await this.applyTableWrite(transaction, write, committedSeq);
-			await this.applyDocumentActions(transaction, documentActions, committedSeq);
-			await transaction.run(
-				"UPDATE durable_metadata SET next_id = $1, next_seq = $2 WHERE singleton = 1",
-				[Math.max(metadata.next_id, candidateNextId), committedSeq + 1],
-			);
-			return committedSeq;
+			let next = metadata.next_seq;
+			for (const writes of batches) {
+				const checked = await this.checkBatch(transaction, writes);
+				if ("refused" in checked) {
+					refused = { error: checked.refused };
+					break;
+				}
+				const seq = seqFromNumber(next++);
+				for (const write of writes) await this.applyTableWrite(transaction, write, seq);
+				await this.applyDocumentActions(transaction, checked.actions, seq);
+				seqs.push(seq);
+				candidateNextId = Math.max(candidateNextId, this.candidateNextId(writes));
+			}
+			if (seqs.length > 0) {
+				await transaction.run(
+					"UPDATE durable_metadata SET next_id = $1, next_seq = $2 WHERE singleton = 1",
+					[Math.max(metadata.next_id, candidateNextId), next],
+				);
+			}
 		});
 		this.nextId = Math.max(this.nextId, candidateNextId);
-		return seq;
+		// `COMMIT` returned: the stored batches are durable.
+		for (const [index, seq] of seqs.entries()) receive(index, seq);
+		return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: refused.error };
+	}
+
+	/**
+	 * Durable's own checks of one batch, with its copies resolved, or its refusal. Only these checks refuse: a throw
+	 * after a failed database call (`watchCalls`) is the database's and rejects the call. Writes nothing.
+	 */
+	private async checkBatch(
+		transaction: PostgresExecutor,
+		writes: readonly StorageWrite[],
+	): Promise<{ readonly actions: Map<DocumentId, DocumentAction> } | { readonly refused: unknown }> {
+		const calls: CheckCalls = { failed: false };
+		const watched = watchCalls(transaction, calls);
+		try {
+			const actions = this.prepareDocumentActions(writes);
+			await this.checkGlobalIds(watched, writes);
+			await this.checkDocumentActions(watched, actions);
+			await this.resolveCopies(watched, actions);
+			return { actions };
+		} catch (error) {
+			if (calls.failed) throw error;
+			return { refused: error };
+		}
+	}
+
+	/** Resolve each copy to a base of its source's state before this batch, which may not change the source. */
+	private async resolveCopies(executor: PostgresExecutor, actions: Map<DocumentId, DocumentAction>): Promise<void> {
+		for (const [id, action] of actions) {
+			if (action.copy === undefined) continue;
+			try {
+				const stored = await this.materializeDocument(executor, action.copy.id, action.copy.at);
+				if (stored === undefined) throw new Error(`Fork source document ${action.copy.id} cannot be read`);
+				const create = action.create!;
+				if (
+					stored.record.scope.kind !== "conversation" ||
+					create.scope.kind !== "conversation" ||
+					stored.record.kind !== create.kind ||
+					stored.record.key !== create.key ||
+					stored.record.history !== create.history ||
+					stored.record.fork !== create.fork
+				) {
+					throw new Error(`Fork source document ${action.copy.id} does not match the copied record`);
+				}
+				action.content = { kind: "base", version: stored.version, value: stored.value };
+			} catch (error) {
+				throw new Error(`Document copy ${id} was rejected`, { cause: error });
+			}
+		}
 	}
 
 	async mintId<I extends Id<string>>(): Promise<I> {
@@ -252,8 +350,7 @@ export class PostgresStorage implements Storage {
 		_context: Context,
 	): Promise<Page<ConversationRecord, Cursor>> {
 		this.assertOpen();
-		const order = resolveOrder(query, cursor, 'ascending');
-		const after = cursorAfterId(cursor);
+		const { order, after } = scanStart(query, cursor, 'ascending');
 		const clauses: string[] = [];
 		const params: unknown[] = [];
 		if (after !== undefined) {
@@ -329,12 +426,12 @@ export class PostgresStorage implements Storage {
 				: typeof idOrContext === "number"
 					? idFromNumber<EntryId>(idOrContext)
 					: undefined;
-		if (id === undefined) throw new TypeError("Storage.entry() requires an entry ID");
+		if (id === undefined) throw new StorageRequestError("Storage.entry() requires an entry ID");
 		let conversation: ConversationRecord | undefined;
 		if (context !== undefined) {
 			const conversationId = idFromNumber<ConversationId>(idOrConversationId);
 			conversation = await this.readConversation(conversationId);
-			if (conversation === undefined) throw new Error(`Unknown conversation: ${conversationId}`);
+			if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
 		}
 		const row = await this.db.get<EntryJsonRow>(
 			"SELECT record, commit_seq FROM entries WHERE id = $1",
@@ -359,7 +456,7 @@ export class PostgresStorage implements Storage {
 		atOrBeforeEntryId: EntryId | undefined,
 	): Promise<(EntryRecord & { readonly head: EntryId }) | undefined> {
 		let conversation = await this.readConversation(conversationId);
-		if (conversation === undefined) throw new Error(`Unknown conversation: ${conversationId}`);
+		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
 		let upper: number | undefined = atOrBeforeEntryId;
 		while (true) {
 			const row =
@@ -385,9 +482,8 @@ export class PostgresStorage implements Storage {
 		cursor: Cursor | undefined,
 	): Promise<Page<EntryRecord, Cursor>> {
 		let conversation = await this.readConversation(query.conversationId);
-		if (conversation === undefined) throw new Error(`Unknown conversation: ${query.conversationId}`);
-		const order = resolveOrder(query, cursor, 'descending');
-		const after = cursorAfterId(cursor);
+		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${query.conversationId}`);
+		const { order, after } = scanStart(query, cursor, 'descending');
 		const values: EntryRecord[] = [];
 
 		if (order === 'descending') {
@@ -466,8 +562,7 @@ export class PostgresStorage implements Storage {
 		_context: Context,
 	): Promise<Page<StoredTask, Cursor>> {
 		this.assertOpen();
-		const order = resolveOrder(query, cursor, 'ascending');
-		const after = cursorAfterId(cursor);
+		const { order, after } = scanStart(query, cursor, 'ascending');
 		const clauses: string[] = [];
 		const params: unknown[] = [];
 		if (after !== undefined) {
@@ -523,8 +618,7 @@ export class PostgresStorage implements Storage {
 		_context: Context,
 	): Promise<Page<SubmissionRecord, Cursor>> {
 		this.assertOpen();
-		const order = resolveOrder(query, cursor, 'ascending');
-		const after = cursorAfterId(cursor);
+		const { order, after } = scanStart(query, cursor, 'ascending');
 		const clauses: string[] = [];
 		const params: unknown[] = [];
 		if (after !== undefined) {
@@ -678,7 +772,7 @@ export class PostgresStorage implements Storage {
 		if (row === undefined) return undefined;
 		const record = parseJson<DocumentRecord>(row.record);
 		if (at !== "current" && isCurrentOnly(record)) {
-			throw new Error(`Document ${id} does not retain historical content`);
+			throw new StorageRequestError(`Document ${id} does not retain historical content`);
 		}
 		if (!isAliveAt(record, at)) return undefined;
 		const upper = at === "current" ? Number.MAX_SAFE_INTEGER : at;
@@ -789,7 +883,7 @@ export class PostgresStorage implements Storage {
 		const liveCounts = new Map<string, number>();
 		for (const [id, action] of actions) {
 			if (action.copy !== undefined && actions.has(action.copy.id)) {
-				throw new StorageRejected(`Document copy ${id} source is changed in the copy batch`);
+				throw new Error(`Document copy ${id} source is changed in the copy batch`);
 			}
 			const row = await executor.get<JsonRow>("SELECT record FROM documents WHERE id = $1", [id]);
 			const existing = row === undefined ? undefined : parseJson<DocumentRecord>(row.record);
@@ -917,28 +1011,8 @@ export class PostgresStorage implements Storage {
 		seq: Seq,
 	): Promise<void> {
 		for (const [id, action] of actions) {
-			let content = action.content;
-			if (action.copy !== undefined) {
-				try {
-					const stored = await this.materializeDocument(executor, action.copy.id, action.copy.at);
-					if (stored === undefined) throw new Error(`Fork source document ${action.copy.id} cannot be read`);
-					const create = action.create!;
-					if (
-						stored.record.scope.kind !== "conversation" ||
-						create.scope.kind !== "conversation" ||
-						stored.record.kind !== create.kind ||
-						stored.record.key !== create.key ||
-						stored.record.history !== create.history ||
-						stored.record.fork !== create.fork
-					) {
-						throw new Error(`Fork source document ${action.copy.id} does not match the copied record`);
-					}
-					content = { kind: "base", version: stored.version, value: stored.value };
-				} catch (error) {
-					if (error instanceof StorageRejected) throw error;
-					throw new StorageRejected(`Document copy ${id} was rejected`, { cause: error });
-				}
-			}
+			// A copy's base was resolved by the batch's checks (`resolveCopies`).
+			const content = action.content;
 			let record: DocumentRecord;
 			if (action.create !== undefined) {
 				record = {

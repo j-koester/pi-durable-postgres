@@ -1,12 +1,13 @@
 import { setImmediate } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import pg from "pg";
 import { describe, expect, it } from "vitest";
 import type { PostgresExecutor } from "../src/database.js";
 import { nodePostgresDatabase } from "../src/node.js";
 import { PostgresStorage } from "../src/storage.js";
-import { deferred, freshStorage, testDatabase } from "./helpers.js";
+import { deferred, freshStorage, testDatabase, touch } from "./helpers.js";
 
 describe("node-postgres adapter", () => {
 	it("uses query-local bigint parsing without changing global or unrelated pool parsers", async () => {
@@ -118,7 +119,7 @@ describe("node-postgres adapter", () => {
 		const fixture = await freshStorage();
 		try {
 			const id = await fixture.storage.mintId<ConversationId>();
-			const commit = fixture.storage.commit([{ type: "conversation", value: { id } }], context);
+			const commit = commitWrites(fixture.storage, [{ type: "conversation", value: { id } }], context);
 			const read = fixture.storage.conversation(id, context);
 			const close = fixture.storage.close(context);
 			await Promise.all([commit, close]);
@@ -132,12 +133,12 @@ describe("node-postgres adapter", () => {
 		try {
 			await expect(PostgresStorage.open(fixture.database)).rejects.toThrow(/already been opened/);
 			await expect(fixture.openStorage()).rejects.toThrow(/in use/);
-			await expect(fixture.storage.commit([], context)).resolves.toBeTypeOf("number");
+			await expect(touch(fixture.storage)).resolves.toBeTypeOf("number");
 			await fixture.storage.close(context);
 			// A successful close must acknowledge unlock, not just enqueue socket destruction.
 			for (let attempt = 0; attempt < 8; attempt++) {
 				const { storage } = await fixture.openStorage();
-				await expect(storage.commit([], context)).resolves.toBeTypeOf("number");
+				await expect(touch(storage)).resolves.toBeTypeOf("number");
 				await storage.close(context);
 			}
 		} finally { await fixture.cleanup(); }
@@ -148,8 +149,8 @@ describe("node-postgres adapter", () => {
 		try {
 			const second = await freshStorage();
 			try {
-				await expect(first.storage.commit([], context)).resolves.toBeTypeOf("number");
-				await expect(second.storage.commit([], context)).resolves.toBeTypeOf("number");
+				await expect(touch(first.storage)).resolves.toBeTypeOf("number");
+				await expect(touch(second.storage)).resolves.toBeTypeOf("number");
 			} finally { await second.cleanup(); }
 		} finally { await first.cleanup(); }
 	});
